@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#020617">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>AI 스마트 스쿼트 코치 (모바일 전용)</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- MediaPipe Pose & Camera Utils -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+  <style>
+    /* 폰 화면 스크롤 바운스 방지 및 전면 카메라 거울 반전 */
+    body {
+      touch-action: pan-y;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .mirror {
+      transform: scaleX(-1);
+    }
+    #lower-body-warning {
+      display: none;
+      position: absolute;
+      inset: 0;
+      background-color: rgba(15, 23, 42, 0.94);
+      color: #fb7185;
+      font-weight: bold;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      gap: 0.75rem;
+      z-index: 40;
+      border-radius: 1.25rem;
+      padding: 1rem;
+      text-align: center;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col items-center p-3 pb-8 font-sans select-none">
+
+  <!-- 모바일 헤더 및 카메라 컨트롤 -->
+  <header class="w-full max-w-md flex items-center justify-between py-2 mb-2">
+    <div class="flex items-center gap-1.5">
+      <div class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></div>
+      <h1 class="text-lg font-black text-emerald-400 tracking-tight">SQUAT COACH AI</h1>
+      <span class="text-[10px] bg-emerald-500/20 text-emerald-300 font-bold px-1.5 py-0.5 rounded">MOBILE</span>
+    </div>
+    <div class="flex items-center gap-2">
+      <!-- 전면/후면 카메라 토글 버튼 -->
+      <button id="camera-flip-btn" class="bg-slate-900 border border-slate-700 hover:border-emerald-500 text-xs px-2.5 py-1.5 rounded-xl font-semibold flex items-center gap-1 active:scale-95 transition">
+        <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+        <span>카메라 전환</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- 상단 핵심 카운터/점수 요약 패널 (모바일 맞춤 가로 3열) -->
+  <div class="grid grid-cols-3 gap-2 w-full max-w-md mb-3">
+    <div class="bg-slate-900/90 border border-slate-800/90 rounded-xl p-2.5 text-center shadow">
+      <span class="text-[10px] uppercase text-slate-400 font-medium block">스쿼트 횟수</span>
+      <p id="counter" class="text-2xl sm:text-3xl font-black text-emerald-400 mt-0.5">0</p>
+    </div>
+    <div class="bg-slate-900/90 border border-slate-800/90 rounded-xl p-2.5 text-center shadow">
+      <span class="text-[10px] uppercase text-slate-400 font-medium block">실시간 점수</span>
+      <p id="live-score" class="text-2xl sm:text-3xl font-black text-amber-400 mt-0.5">100<span class="text-xs text-slate-500 font-normal">점</span></p>
+    </div>
+    <div class="bg-slate-900/90 border border-slate-800/90 rounded-xl p-2.5 text-center shadow">
+      <span class="text-[10px] uppercase text-slate-400 font-medium block">직전 1회 평가</span>
+      <p id="last-rep-grade" class="text-sm sm:text-base font-bold text-sky-400 mt-1 truncate">대기 중</p>
+    </div>
+  </div>
+
+  <!-- 메인 카메라 및 AI 비전 캔버스 영역 -->
+  <div class="relative w-full max-w-md aspect-[3/4] bg-black rounded-2xl overflow-hidden border border-slate-800 shadow-xl flex items-center justify-center mb-3">
+    <video id="webcam" class="hidden" playsinline></video>
+    <canvas id="output-canvas" class="w-full h-full object-cover mirror"></canvas>
+
+    <!-- 모델 로딩 화면 -->
+    <div id="loading-badge" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 text-white gap-3 z-40">
+      <div class="w-7 h-7 border-3 border-emerald-400 border-t-transparent rounded-full animate-spin"></div>
+      <p class="font-medium text-xs text-slate-300">카메라 및 AI 모델 초기화 중...</p>
+    </div>
+
+    <!-- 하체 미검출 방지 경고 배너 -->
+    <div id="lower-body-warning">
+      <svg class="w-10 h-10 text-rose-400 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+      </svg>
+      <p class="text-sm font-bold text-rose-300">발목까지 전신이 보이지 않습니다</p>
+      <p class="text-[11px] text-slate-400">스마트폰을 2~3m 앞에 비스듬히 세워두고<br>측면 전신이 화면에 담기도록 해주세요.</p>
+    </div>
+
+    <!-- 화면 위 플로팅 상태 태그 -->
+    <div class="absolute top-2.5 left-2.5 bg-slate-900/80 backdrop-blur-md px-2.5 py-1 rounded-full border border-slate-700/60 flex items-center gap-1.5 z-30">
+      <span id="status-indicator" class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+      <span id="status-text" class="text-[11px] font-semibold text-slate-200">측면 준비 완료</span>
+    </div>
+
+    <div class="absolute top-2.5 right-2.5 bg-slate-900/80 backdrop-blur-md px-2.5 py-1 rounded-full border border-slate-700/60 text-[11px] font-bold text-sky-300 z-30">
+      목표: <span id="overlay-target-angle">80°</span>
+    </div>
+  </div>
+
+  <!-- 실시간 ROM(가동 범위) & 하강 높이 게이지 -->
+  <div class="w-full max-w-md bg-slate-900/90 border border-slate-800 rounded-2xl p-3 shadow mb-3">
+    <div class="flex items-center justify-between mb-1.5">
+      <span class="text-[11px] font-bold text-slate-300 uppercase">실시간 하강 높이 (ROM)</span>
+      <span id="rom-status-label" class="text-[11px] font-bold text-amber-400">서 있는 상태</span>
+    </div>
+    <div class="w-full h-3 bg-slate-950 rounded-full overflow-hidden border border-slate-800 p-0.5 relative mb-2">
+      <div id="target-marker" class="absolute top-0 bottom-0 w-1 bg-white shadow z-10" style="left: 75%;"></div>
+      <div id="rom-progress" class="h-full bg-gradient-to-r from-amber-500 via-sky-400 to-emerald-400 rounded-full transition-all duration-100" style="width: 0%;"></div>
+    </div>
+    <div class="grid grid-cols-2 gap-2 text-center text-xs">
+      <div class="bg-slate-950/70 p-2 rounded-lg border border-slate-800/80">
+        <span class="text-[10px] text-slate-400 block">현재 무릎 각도</span>
+        <span id="current-knee-angle" class="text-base font-black text-sky-400">170°</span>
+      </div>
+      <div class="bg-slate-950/70 p-2 rounded-lg border border-slate-800/80">
+        <span class="text-[10px] text-slate-400 block">목표치와 차이</span>
+        <span id="depth-delta-txt" class="text-base font-black text-amber-400">+90° 하강 필요</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 신체 스펙 입력 및 스탠스 분석 아코디언 드롭다운 (모바일 친화적 접기/펼치기) -->
+  <div class="w-full max-w-md bg-slate-900/80 border border-slate-800 rounded-2xl p-3.5 shadow">
+    <div class="flex items-center justify-between cursor-pointer" id="profile-toggle">
+      <div class="flex items-center gap-1.5">
+        <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+        <span class="text-xs font-bold text-slate-200">내 체형 맞춤 스탠스 설정</span>
+      </div>
+      <span id="femur-badge" class="text-[10px] bg-sky-500/20 text-sky-300 px-2 py-0.5 rounded-full border border-sky-500/30">표준 체형</span>
+    </div>
+
+    <!-- 입력란 및 분석 결과 -->
+    <div id="profile-content" class="mt-3 pt-3 border-t border-slate-800/80 space-y-2.5">
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="block text-[10px] text-slate-400 mb-1">키 (cm)</label>
+          <input id="user-height" type="number" value="175" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white">
+        </div>
+        <div>
+          <label class="block text-[10px] text-slate-400 mb-1">몸무게 (kg)</label>
+          <input id="user-weight" type="number" value="70" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white">
+        </div>
+      </div>
+      <button id="calc-btn" class="w-full bg-emerald-500 active:bg-emerald-600 text-slate-950 font-bold py-2 rounded-lg text-xs transition">
+        맞춤 자세 재분석 & 적용
+      </button>
+      <div class="bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/70 text-[11px] space-y-1">
+        <p class="text-emerald-400 font-bold" id="stance-title">어깨너비 1.1배 스탠스</p>
+        <p class="text-slate-400" id="stance-angle-desc">발끝 외회전: 약 15° ~ 20°</p>
+        <p class="text-slate-300 leading-snug" id="stance-advice">대퇴골 비중이 표준적입니다. 가슴을 펴고 자연스럽게 앉으세요.</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const videoElement = document.getElementById('webcam');
+    const canvasElement = document.getElementById('output-canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+
+    // UI 요소
+    const counterEl = document.getElementById('counter');
+    const liveScoreEl = document.getElementById('live-score');
+    const lastRepGradeEl = document.getElementById('last-rep-grade');
+    const statusTextEl = document.getElementById('status-text');
+    const statusIndicatorEl = document.getElementById('status-indicator');
+    const loadingBadge = document.getElementById('loading-badge');
+    const lowerBodyWarningEl = document.getElementById('lower-body-warning');
+    const cameraFlipBtn = document.getElementById('camera-flip-btn');
+
+    // 맞춤 스탠스 요소
+    const userHeightInput = document.getElementById('user-height');
+    const userWeightInput = document.getElementById('user-weight');
+    const calcBtn = document.getElementById('calc-btn');
+    const femurBadge = document.getElementById('femur-badge');
+    const stanceTitle = document.getElementById('stance-title');
+    const stanceAngleDesc = document.getElementById('stance-angle-desc');
+    const stanceAdvice = document.getElementById('stance-advice');
+    const overlayTargetAngle = document.getElementById('overlay-target-angle');
+
+    // ROM 게이지 요소
+    const romStatusLabel = document.getElementById('rom-status-label');
+    const romProgress = document.getElementById('rom-progress');
+    const targetMarker = document.getElementById('target-marker');
+    const currentKneeAngleEl = document.getElementById('current-knee-angle');
+    const depthDeltaTxt = document.getElementById('depth-delta-txt');
+
+    let count = 0;
+    let stage = 'UP';
+    let currentRepLowestScore = 100;
+    let lowerBodyVisible = false;
+    let speechCooldown = 0;
+    let facingMode = 'user'; // 'user' (전면) or 'environment' (후면)
+    let cameraInstance = null;
+
+    let profile = {
+      height: 175,
+      weight: 70,
+      targetKneeAngle: 80,
+      femurRatioCategory: '표준'
+    };
+
+    // 모바일 햅틱 진동 피드백 함수
+    function vibrate(ms = 60) {
+      if ('vibrate' in navigator) {
+        try { navigator.vibrate(ms); } catch (e) {}
+      }
+    }
+
+    // 신체 스펙 기반 스탠스 계산
+    function recalculatePersonalizedSquat(speakFeedback = false) {
+      const h = parseFloat(userHeightInput.value) || 175;
+      const w = parseFloat(userWeightInput.value) || 70;
+      profile.height = h;
+      profile.weight = w;
+
+      if (h >= 180) {
+        profile.femurRatioCategory = '대퇴골 긴 편';
+        profile.targetKneeAngle = 82;
+        stanceTitle.innerText = '어깨너비 1.3배 와이드 스탠스';
+        stanceAngleDesc.innerText = '발끝 외회전: 약 25° ~ 30° 권장';
+        femurBadge.className = 'text-[10px] bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full border border-purple-500/30';
+        stanceAdvice.innerText = '대퇴골이 길어 허리가 숙여지기 쉽습니다. 보폭을 넓히고 발끝을 열어 골반 공간을 확보하세요.';
+      } else if (h <= 165) {
+        profile.femurRatioCategory = '대퇴골 컴팩트형';
+        profile.targetKneeAngle = 75;
+        stanceTitle.innerText = '어깨너비 1.0배 표준 스탠스';
+        stanceAngleDesc.innerText = '발끝 외회전: 약 10° ~ 15° 권장';
+        femurBadge.className = 'text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-500/30';
+        stanceAdvice.innerText = '상체 직립에 유리합니다. 어깨너비로 서서 75° 수준까지 깊이 앉아보세요.';
+      } else {
+        profile.femurRatioCategory = '표준 체형';
+        profile.targetKneeAngle = 80;
+        stanceTitle.innerText = '어깨너비 1.1배 스탠스';
+        stanceAngleDesc.innerText = '발끝 외회전: 약 15° ~ 20°';
+        femurBadge.className = 'text-[10px] bg-sky-500/20 text-sky-300 px-2 py-0.5 rounded-full border border-sky-500/30';
+        stanceAdvice.innerText = '표준 체형입니다. 발을 어깨너비 정도로 벌리고 가슴을 열며 부드럽게 앉으세요.';
+      }
+
+      femurBadge.innerText = profile.femurRatioCategory;
+      overlayTargetAngle.innerText = `${profile.targetKneeAngle}°`;
+
+      const targetPercent = Math.min(100, Math.max(0, ((160 - profile.targetKneeAngle) / (160 - 60)) * 100));
+      targetMarker.style.left = `${targetPercent}%`;
+
+      if (speakFeedback) speak(`목표 각도는 ${profile.targetKneeAngle}도입니다.`);
+    }
+
+    calcBtn.addEventListener('click', () => recalculatePersonalizedSquat(true));
+
+    // TTS 음성 코칭
+    function speak(text) {
+      const now = Date.now();
+      if (now - speechCooldown < 2500) return;
+      speechCooldown = now;
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = 'ko-KR';
+        u.rate = 1.05;
+        window.speechSynthesis.speak(u);
+      }
+    }
+
+    function calculateAngle(a, b, c) {
+      if (!a || !b || !c) return 0;
+      const radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+      let angle = Math.abs((radians * 180.0) / Math.PI);
+      if (angle > 180.0) angle = 360 - angle;
+      return Math.round(angle);
+    }
+
+    // MediaPipe 결과 콜백
+    function onResults(results) {
+      loadingBadge.style.display = 'none';
+
+      canvasElement.width = videoElement.videoWidth;
+      canvasElement.height = videoElement.videoHeight;
+
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+      if (results.poseLandmarks) {
+        const lm = results.poseLandmarks;
+        const leftScore = lm[11].visibility + lm[23].visibility + lm[25].visibility + lm[27].visibility;
+        const rightScore = lm[12].visibility + lm[24].visibility + lm[26].visibility + lm[28].visibility;
+        const isLeft = leftScore > rightScore;
+
+        const shoulder = isLeft ? lm[11] : lm[12];
+        const hip = isLeft ? lm[23] : lm[24];
+        const knee = isLeft ? lm[25] : lm[26];
+        const ankle = isLeft ? lm[27] : lm[28];
+
+        // 전신 필수 가시성 검사 (하체 미검출 방지)
+        const validLegs = hip.visibility > 0.65 && knee.visibility > 0.65 && ankle.visibility > 0.65;
+        lowerBodyWarningEl.style.display = validLegs ? 'none' : 'flex';
+
+        if (!validLegs) {
+          lowerBodyVisible = false;
+          statusTextEl.innerText = '전신 대기 중';
+          statusIndicatorEl.className = 'w-2 h-2 rounded-full bg-rose-500 animate-pulse';
+          if (stage === 'DOWN') stage = 'UP';
+          canvasCtx.restore();
+          return;
+        }
+
+        lowerBodyVisible = true;
+        statusTextEl.innerText = '인식 성공';
+        statusIndicatorEl.className = 'w-2 h-2 rounded-full bg-emerald-400';
+
+        const kneeAngle = calculateAngle(hip, knee, ankle);
+        const hipFlexion = calculateAngle(shoulder, hip, knee);
+
+        currentKneeAngleEl.innerText = `${kneeAngle}°`;
+        const romPercent = Math.min(100, Math.max(0, ((160 - kneeAngle) / (160 - 60)) * 100));
+        romProgress.style.width = `${romPercent}%`;
+
+        const delta = kneeAngle - profile.targetKneeAngle;
+        let liveScore = 100;
+
+        if (delta > 15) {
+          depthDeltaTxt.innerText = `-${delta}° 더 하강`;
+          depthDeltaTxt.className = "text-base font-black text-amber-400";
+          romStatusLabel.innerText = "깊이 부족";
+        } else if (delta <= 15 && delta >= -10) {
+          depthDeltaTxt.innerText = `목표 도달!`;
+          depthDeltaTxt.className = "text-base font-black text-emerald-400";
+          romStatusLabel.innerText = "최적 깊이 안착 🎯";
+        } else {
+          depthDeltaTxt.innerText = `${Math.abs(delta)}° 과도한 딥`;
+          depthDeltaTxt.className = "text-base font-black text-rose-400";
+          romStatusLabel.innerText = "과도한 하강 주의";
+          liveScore -= 10;
+        }
+
+        if (hipFlexion < 65 && stage === 'DOWN') liveScore -= 20;
+
+        liveScore = Math.max(0, liveScore);
+        liveScoreEl.innerHTML = `${liveScore}<span class="text-xs text-slate-500 font-normal">점</span>`;
+
+        // 하강 인식
+        if (kneeAngle <= (profile.targetKneeAngle + 15) && hipFlexion <= 110) {
+          if (stage === 'UP') {
+            stage = 'DOWN';
+            currentRepLowestScore = liveScore;
+            vibrate(40); // 하강 도달 시 짧은 진동 알림
+          } else {
+            if (liveScore < currentRepLowestScore) currentRepLowestScore = liveScore;
+          }
+        }
+
+        // 상승 인식 (카운트 완료)
+        if (kneeAngle >= 155 && hipFlexion >= 140 && stage === 'DOWN') {
+          stage = 'UP';
+          count += 1;
+          counterEl.innerText = count;
+          vibrate([60, 40, 60]); // 성공 시 2회 진동
+          evaluateRep(currentRepLowestScore);
+        }
+
+        drawTargetGuide(canvasCtx, hip, knee, canvasElement.width, canvasElement.height);
+        drawSkeleton(canvasCtx, shoulder, hip, knee, ankle, canvasElement.width, canvasElement.height, liveScore);
+      }
+      canvasCtx.restore();
+    }
+
+    // 화면 위 가이드 높이선
+    function drawTargetGuide(ctx, hip, knee, w, h) {
+      const targetHipY = (knee.y * h) + 4;
+      ctx.save();
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(w * 0.05, targetHipY);
+      ctx.lineTo(w * 0.95, targetHipY);
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = '#10b981';
+      ctx.stroke();
+
+      ctx.fillStyle = '#064e3b';
+      ctx.fillRect(w * 0.08, targetHipY - 18, 90, 16);
+      ctx.fillStyle = '#6ee7b7';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.fillText(`목표 높이 (${profile.targetKneeAngle}°)`, w * 0.1, targetHipY - 6);
+      ctx.restore();
+    }
+
+    function drawSkeleton(ctx, s, h, k, a, w, hg, score) {
+      const color = score >= 80 ? '#10b981' : (score >= 60 ? '#f59e0b' : '#f43f5e');
+      ctx.beginPath();
+      ctx.moveTo(s.x * w, s.y * hg);
+      ctx.lineTo(h.x * w, h.y * hg);
+      ctx.lineTo(k.x * w, k.y * hg);
+      ctx.lineTo(a.x * w, a.y * hg);
+      ctx.lineWidth = 3.5;
+      ctx.strokeStyle = color;
+      ctx.stroke();
+
+      [s, h, k, a].forEach(pt => {
+        ctx.beginPath();
+        ctx.arc(pt.x * w, pt.y * hg, 5, 0, 2 * Math.PI);
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      });
+    }
+
+    function evaluateRep(score) {
+      let grade = '';
+      let colorClass = '';
+      if (score >= 90) {
+        grade = `💯 완벽 (${score}점)`;
+        colorClass = 'text-emerald-400';
+        speak(`${count}회. 훌륭합니다!`);
+      } else if (score >= 70) {
+        grade = `👍 양호 (${score}점)`;
+        colorClass = 'text-sky-400';
+        speak(`${count}회. 좋습니다.`);
+      } else {
+        grade = `⚠️ 교정 (${score}점)`;
+        colorClass = 'text-amber-400';
+        speak(`${count}회. 깊이를 더 앉으세요.`);
+      }
+      lastRepGradeEl.innerText = grade;
+      lastRepGradeEl.className = `text-sm sm:text-base font-bold truncate ${colorClass}`;
+    }
+
+    // MediaPipe Pose 로드
+    const pose = new Pose({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+    });
+
+    pose.setOptions({
+      modelComplexity: 1,
+      smoothLandmarks: true,
+      minDetectionConfidence: 0.65,
+      minTrackingConfidence: 0.65
+    });
+
+    pose.onResults(onResults);
+
+    // 모바일 카메라 시작 및 전환 함수
+    async function startCamera(facing) {
+      if (cameraInstance) {
+        try { cameraInstance.stop(); } catch (e) {}
+      }
+
+      if (facing === 'user') {
+        canvasElement.classList.add('mirror');
+      } else {
+        canvasElement.classList.remove('mirror');
+      }
+
+      cameraInstance = new Camera(videoElement, {
+        onFrame: async () => {
+          await pose.send({ image: videoElement });
+        },
+        facingMode: facing,
+        width: 480,
+        height: 640
+      });
+
+      await cameraInstance.start();
+    }
+
+    // 카메라 전환 버튼
+    cameraFlipBtn.addEventListener('click', async () => {
+      facingMode = facingMode === 'user' ? 'environment' : 'user';
+      loadingBadge.style.display = 'flex';
+      await startCamera(facingMode);
+    });
+
+    window.addEventListener('DOMContentLoaded', () => {
+      recalculatePersonalizedSquat(false);
+      startCamera(facingMode);
+    });
+  </script>
+</body>
+</html>
