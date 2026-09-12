@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/32141184/README.md)
 # **🏋️‍♂️ AI Smart Squat Master (AI 스마트 스쿼트 마스터)**
 
 > **MediaPipe Pose 기반 실시간 AI 모션 비전 & 맞춤형 스쿼트 피드백 시스템**
